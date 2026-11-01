@@ -1,0 +1,219 @@
+# Cocktail — Shared Agent Instructions
+
+Canonical instructions for every coding agent (Claude Code, Codex, Pi, Antigravity).
+`GEMINI.md` and the tool-specific role/skill copies are generated from `.agents/`
+by `node .agents/scripts/sync.mjs`. Do not edit generated copies.
+
+## Project context
+
+Cocktail is a 4-person hackathon project: an audio-first assistive experience using
+Ray-Ban Meta glasses, a phone, and possibly a Quest headset as a display. Expected
+building blocks: Gemma (open-weight models; variant and runtime not chosen yet),
+SAM3 (promptable visual segmentation), and possibly SAM Audio (prompted audio source separation).
+
+Do not assume:
+- an app stack, language, framework, or build system (none is chosen yet);
+- that Unity, a Meta SDK integration, or any device bridge exists;
+- that model checkpoints are downloaded, accessible, or runnable on available hardware;
+- that a device capability (camera stream, mic access, display output) is available
+  until it is verified against official docs or on the device.
+
+## Workflow (orchestrator)
+
+1. **Inspect** the repo and relevant docs before planning.
+2. **Plan**: outcome and acceptance criteria; tasks with dependencies and order; the
+   role assigned to each; file ownership per task; shared decisions (interfaces,
+   formats, config); how each task will be verified.
+3. **Delegate**:
+   - Plan first, always: inspect, query graphify, and write the plan as a task DAG
+     with file ownership per task before spawning anything. Claude Code: consult the
+     advisor on the plan before fanning out.
+   - No concurrency cap (deadline mode). Spawn every task with no unmet dependency in
+     the same message; start each next wave as soon as its dependencies finish.
+     If rate-limited, cap a wave at about 6 agents.
+   - One editing agent per working tree: every parallel editing agent runs in its own
+     worktree on its own branch. Read-only agents need no worktree.
+   - File ownership within a wave is disjoint. Shared interfaces, config,
+     `.agents/decisions.md`, and dependency files are decided in the plan up front or
+     edited by a single owner task.
+   - Keep tasks narrow and fully specified (exact files, acceptance checks, what to
+     return); subagents run at low effort.
+   - Never block on long commands: run anything expected to take more than about
+     1 minute (tests, builds, model runs, installs, evals) in the background and watch
+     it (Claude Code: `run_in_background` + `Monitor`; other tools: their background/async equivalent), not
+     foreground waits or sleep-polling. Subagents follow the same rule.
+   - Use the wait time: while commands or agents run, plan the next wave, spawn tasks
+     whose dependencies are met, and integrate or check returned results. Idle only
+     when everything remaining depends on running work.
+   - Every assignment states: goal and context, allowed files, skills to load,
+     dependencies, acceptance/verification, and what to return.
+   - Subagents start cold: they see only the assignment, not the orchestrator's
+     conversation. Make each assignment self-contained. Include the user's actual
+     requirements and constraints (quoted where wording matters), decisions already
+     made and why, relevant findings with file:line references or excerpts, approaches
+     already ruled out, and the branch handoff file path if one exists. Pass concrete
+     facts, not "as discussed" or "see above". For follow-ups, continue the same
+     subagent (e.g. Claude Code `SendMessage`) rather than starting a fresh one.
+   - Out-of-scope needs are reported back to the orchestrator, not acted on.
+4. **Integrate and review**: the orchestrator inspects and integrates results itself
+   (merge worktree branches serially, run tests once on the combined result), then
+   gets one independent review proportional to risk on the combined diff (the
+   `reviewer` role for non-trivial or shared-interface changes).
+5. **Continuity**: for substantive tasks keep a per-branch handoff file in
+   `.agents/handoff/` (format in `.agents/handoff/README.md`: status, ownership,
+   decisions, verification, next steps) so another agent or teammate can resume.
+   Only that branch's orchestrator edits it; delete it in the PR before merge.
+   Durable team-wide decisions go in `.agents/decisions.md` via PR.
+   Live status across teammates lives in GitHub: open a draft PR early
+   (`gh pr list` shows who is working on what).
+
+Trivial tasks: write a brief plan and do them directly.
+
+## Hackathon coordination and fallbacks
+
+- Each feature has one orchestrator. Before parallel work, agree on a team integration
+  owner for shared interfaces and `.agents/decisions.md`; only that owner approves
+  changes to them. Subagents return handoff notes to their orchestrator.
+- Shared devices are not isolated by worktrees. Before running commands that change or
+  occupy a physical device (install, uninstall, reboot, clear data, settings changes)
+  or a long GPU job on a shared machine, ask the user to confirm it's free. Note in
+  results if measurements may have run alongside other work.
+- Read-only roles may run bounded inspection commands (`rg`, file reads, `git status`,
+  `git diff`, `git show`) and retrieve public official documentation without saving it.
+  They must not mutate files, install software, execute repository code, or run tests
+  or builds that may write artifacts. The orchestrator runs those checks and supplies
+  the output. This evidence handoff satisfies reviewer verification requirements.
+- These project fallbacks take precedence over conflicting vendored skill instructions:
+  when metavr is unavailable, verify documentation claims using current official Meta
+  documentation or upstream source, recording URL, version/date, and uncertainty. Do
+  not install tooling just to answer a docs question. Device-state claims still need
+  device evidence; mark them unverified if unavailable. The vendored `gemma-dev` skill's
+  `search_documentation` tool is the Google Developer Knowledge MCP server
+  (`search_documents`, `get_documents`, `answer_query`); each person adds it at user
+  scope with their own API key, never in repo config. Without it, use
+  https://gemma.ai/llms.txt as the skill describes. If a role has no web access,
+  ask the orchestrator to retrieve the specific sources, then continue independent work.
+- The missing `superpowers:test-driven-development` skill is not a blocker: reproduce
+  the failure with the smallest test or repeatable check, confirm it fails before the
+  fix and passes afterward. Use the local `verification-before-completion` skill.
+- Editing agents may install task-required project-local dependencies in an isolated
+  environment after coordinating dependency-file changes with the orchestrator.
+  Global installs, gated checkpoint access/downloads, and sandbox escalation still
+  require the existing approvals. Never install into a shared/global environment by default.
+
+## Codebase context (graphify)
+
+graphify builds a local knowledge graph of the repo in `graphify-out/` (gitignored,
+rebuilt per clone by git hooks). Skill: `.agents/skills/graphify/SKILL.md`. Setup follows
+the official docs (https://github.com/Graphify-Labs/graphify, https://docs.graphify.com).
+
+- **Setup (once per machine):** `uv tool install graphifyy==0.9.95` (or `pipx install graphifyy==0.9.95`)
+  so `graphify` is on PATH. Installing software needs user approval.
+- **Setup (once per clone):** `graphify hook install` (post-commit/checkout/merge/rewrite
+  hooks rebuild the graph, code only; it also adds a `.gitattributes` merge-driver line,
+  which is not committed because the graph isn't), then `graphify update .` to build the first graph.
+  Run `graphify update .` after pulls too. Both are local tree-sitter, no model calls.
+  The full `/graphify .` pass also sends docs, PDFs, and images to the assistant's model
+  provider; ask the user before running it on anything sensitive.
+- When `graphify-out/graph.json` exists, run `graphify query "<question>"`,
+  `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` before broad grep or
+  file-by-file reads for codebase questions. Read raw files only for lines the graph
+  located. Use `graphify-out/GRAPH_REPORT.md` only for broad architecture review.
+  If graphify is not set up, say so and fall back to normal search.
+- Orchestrators: query the graph while planning and paste the relevant output
+  (nodes, paths, file:line locations) into each assignment, and tell subagents to
+  query the graph before exploring.
+- After changing code, run `graphify update .` to keep the graph current.
+- Claude Code: `graphify claude install` wrote the graphify section in `CLAUDE.md` and
+  the `graphify hook-guard` PreToolUse hooks in `.claude/settings.json` (they nudge
+  toward graph queries). `.claude/hooks/graphify-subagent-guard.mjs` adds a project
+  rule: it blocks a subagent's Bash/Grep/Glob/Read calls until that subagent has run
+  `graphify query|explain|path|update` (reads inside `graphify-out/` are allowed); it does nothing when the
+  graph or CLI is missing. Without the CLI on PATH the official hooks report a
+  non-blocking hook error. Other tools follow these rules from this file.
+- Not run here: `graphify codex|antigravity|pi ... install`. They write into
+  `AGENTS.md` and `.agents/`, which conflicts with the sync-generated layout. This
+  section carries the same guidance.
+
+## Shared rules
+
+- Coordinate changes to shared interfaces, root config, and dependency files with the
+  orchestrator before making them.
+- Load specialist skills only when relevant to the task.
+- Preserve scope: no unrequested features, scaffolding, or stack choices.
+- Report checks honestly: only claim what you actually ran, with results.
+- Label evidence: hardware-tested, mocked, replayed (recorded data), or untested.
+- Subagents return: findings/changes, checks run, uncertainty, handoff notes.
+- Subagents whose assignment lacks context they need ask the orchestrator for it
+  instead of guessing or re-deriving it from scratch.
+- The orchestrator inspects and integrates subagent output; it does not rubber-stamp.
+- Apart from the branch/PR flow in **Git workflow**, this configuration grants no
+  permission to deploy, publish, message people, install
+  software globally, download gated checkpoints, or bypass sandbox/approval controls.
+  Ask the user first.
+
+## Git workflow
+
+Every independent feature, fix, or config change goes through its own branch and a
+pull request. Follow-up fixes and small adjustments for the same feature stay on its
+current branch and PR; do not restart the branch workflow for each agent subtask.
+
+- **Never commit directly to `main`.** Start each task from an up-to-date base:
+  `git switch main && git pull`, then `git switch -c <type>/<short-kebab-desc>`.
+  First inspect status and the current branch. Do not switch branches underneath
+  existing work or stash/discard someone else's changes. For concurrent work, fetch
+  the target and create a separate worktree/branch from that updated target instead
+  of switching the shared checkout. Reuse the assigned branch for an ongoing task.
+  Branch off another feature branch only when the work depends on it, and target the
+  PR at that branch.
+- **Branch types:** `feat/`, `fix/`, `docs/`, `chore/`, `refactor/`, `test/`,
+  `perf/` (e.g. `feat/gemma-live-audio`, `fix/sam3-mask-offset`).
+- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/), e.g.
+  `feat(perception): add SAM3 image prompt wrapper`. Make small focused commits, and
+  never commit secrets, `.env` files, checkpoints, or large binaries.
+- **Scope:** one feature per branch and PR. Unrelated fixes get their own branch.
+- **Draft PRs:** open early with `gh pr create --draft --base <target>` to show work
+  in progress. Checks and review may still be pending; state that clearly and keep
+  the branch handoff available throughout development and review.
+- **Before marking a PR ready for review (or opening a non-draft PR):** rebase on or
+  merge the latest target branch, run the
+  relevant checks (and `node .agents/scripts/sync.mjs --check` if `.agents/` or
+  `AGENTS.md` changed), and get a `reviewer` pass for non-trivial changes.
+- **When preparing to merge:** move durable decisions from the branch handoff file
+  into `.agents/decisions.md` or the PR body, then delete the handoff file in that PR.
+  Re-run checks affected by final edits. A human still approves and merges.
+- **Open the PR** with `gh pr create --base <target>`, using a Conventional Commit
+  title. The body covers: summary, linked issue (if any), checks actually run with
+  results, evidence labels (hardware-tested / mocked / replayed / untested), and
+  known limitations.
+- **Agents may** create branches, commit, push their feature branch, and open PRs.
+- **Agents must not** merge PRs, push to or force-push `main`, force-push a branch
+  someone else is working on, or delete remote branches without the user's explicit
+  approval. A human approves and merges.
+- Parallel agents work in separate worktrees, each on its own branch.
+
+## Skill index (`.agents/skills/`)
+
+| Skill | Load when |
+|---|---|
+| `cocktail-perception` | SAM3, SAM Audio, audio/visual timing, source association, perception pipelines (project-authored) |
+| `graphify` | codebase questions when `graphify-out/` exists; building/updating the graph (see **Codebase context**) |
+| `gemma-dev` | building with Gemma: model choice, runtimes, prompt format, capabilities |
+| `hz-quest-verify-first` | any Meta Quest / Horizon OS claim or code (needs metavr CLI/MCP; ask before `npx`) |
+| `systematic-debugging` | any bug, test failure, or unexpected behavior, before proposing fixes |
+| `verification-before-completion` | before claiming work is complete, fixed, or passing |
+
+Tooling gaps: the referenced TDD skill and metavr CLI/MCP are not installed.
+Use the project fallbacks above; do not repeatedly stop to request their installation.
+
+## Role index (`.agents/roles/`)
+
+| Role | Access | Use for |
+|---|---|---|
+| `docs-scout` | read-only | verify SDK APIs, hardware capabilities, model requirements, official examples |
+| `perception-engineer` | edit | bounded audio/CV tasks (SAM3, SAM Audio, timing, source association) |
+| `device-engineer` | edit | bounded phone / glasses / Quest integration tasks |
+| `integration-engineer` | edit | bounded Gemma integration and communication/interface tasks |
+| `reviewer` | read-only | independent review of correctness, concurrency, latency, secrets, regressions, evidence |
+
+See `.agents/README.md` for per-tool setup, invocation, and enforcement limits.
